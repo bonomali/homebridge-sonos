@@ -925,14 +925,22 @@ SonosSceneAccessory.prototype._configurePlaylist = function (device, callback) {
         return;
       }
 
-      this.log('Playlist has been configured on coordinator %s', device.name);
+      device.sonos.selectQueue(function (err) {
+        if (err) {
+          this.log('Playlist selectQueue request failed: %s', err);
+          callback(err);
+          return;
+        }
 
-      if (this.sceneConfig.volume) {
-        this._configureVolume(device, callback);
-        return;
-      }
+        this.log('Playlist has been configured on coordinator %s', device.name);
 
-      this._play(device, callback);
+        if (this.sceneConfig.volume) {
+          this._configureVolume(device, callback);
+          return;
+        }
+
+        this._play(device, callback);
+      }.bind(this));
     }.bind(this));
   }.bind(this));
 };
