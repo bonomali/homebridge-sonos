@@ -42,6 +42,7 @@ Adding `scenes` is also optional. Each entry inside it is the name of a switch
 to create that will set a Sonos "scene". This includes forming a group, setting
 a Spotify playlist, enabling shuffle, and optionally setting the volumes for
 each zone and a sleep timer. The sleep timer configuration must be in the format
-`H:MM:SS`.
+`H:MM:SS`. The playlist can also be set to "audoinput:zone", where zone is the
+name of a Play 5 zone which has a Audio Component Line In.)
 
 *NOTE*: The `scenes` functionality only works for Spotify at this time.

@@ -322,6 +322,7 @@ SonosPlatform.prototype.updateTopology = function (device, callback) {
           name: undefined,
           coordinator: undefined,
           queueUri: '',
+          trackUri: '',
           group: undefined,
           uuid: undefined,
           updateTimeout: undefined
@@ -505,9 +506,16 @@ SonosPlatform.prototype._processAVEvent = function (deviceData, eventStruct) {
     queueUri = '';
   }
 
-  deviceData.queueUri = queueUri;
+  if (eventStruct.CurrentTrackURI) {
+    trackUri = eventStruct.CurrentTrackURI[0].$.val;
+  } else {
+    trackUri = '';
+  }
 
-  this._log(deviceData, 'State is now %s (%s) and queue URI is now "%s"', textValue, value, queueUri);
+  deviceData.queueUri = queueUri;
+  deviceData.trackUri = trackUri;
+
+  this._log(deviceData, 'State is now %s (%s), track URI is now "%s" and queue URI is now "%s"', textValue, value, trackUri, queueUri);
 
   var groupList = this.groupMembers.get(deviceData.group);
   if (!groupList) {
@@ -855,8 +863,31 @@ SonosSceneAccessory.prototype.validateTopology = function (device) {
 
 // Returns true if the given device is currently playing the requested URI
 SonosSceneAccessory.prototype.isDevicePlayingSceneUri = function (device) {
-  var expectedUri = 'x-rincon-cpcontainer:10062a6c' + this.sceneConfig.playlist.replace(/:/g, '%3a');
-  return device.queueUri === expectedUri;
+  if (this.sceneConfig.playlist.startsWith('audioinput:')) {
+    // Should be no queue, but the track should be the audio input
+    var audioStreamUri = this._getAudioInputUri();
+    return audioStreamUri && device.trackUri === audioStreamUri;
+  }
+
+  return device.queueUri === this._getPlaylistUri();
+};
+
+// Get audio input URI for the coordinator
+SonosSceneAccessory.prototype._getAudioInputUri = function () {
+  var zone = this.sceneConfig.playlist.split(':', 2)[1],
+      zoneAccessory = this.platform.accessories.get(zone),
+      audioStreamUri;
+
+  if (!zoneAccessory) {
+    return '';
+  }
+
+  return 'x-rincon-stream:' + zoneAccessory.device.uuid;
+};
+
+// Get a playlist URI
+SonosSceneAccessory.prototype._getPlaylistUri = function () {
+  return 'x-rincon-cpcontainer:10062a6c' + this.sceneConfig.playlist.replace(/:/g, '%3a');
 };
 
 // Configure the other devices in the scene configuration to use our coordinator
@@ -907,6 +938,38 @@ SonosSceneAccessory.prototype._configureTopology = function (device, callback) {
 
 // Process the queue URI and play the playlist
 SonosSceneAccessory.prototype._configurePlaylist = function (device, callback) {
+  if (this.sceneConfig.playlist.startsWith('audioinput:')) {
+    this._configurePlaylistAudioInput(device, callback);
+  } else {
+    this._configurePlaylistQueue(device, callback);
+  }
+};
+
+// Process playlist from audio input
+SonosSceneAccessory.prototype._configurePlaylistAudioInput = function (device, callback) {
+  // Flick over to the requested audio input source
+  var audioStreamUri = this._getAudioInputUri();
+  if (!audioStreamUri) {
+    this.log('The required Sonos audio input device is not available');
+    callback(new Error('The required Sonos audio input device is not available'));
+    return;
+  }
+
+  device.sonos.queueNext({
+    uri: audioStreamUri
+  }, function (err) {
+    if (err) {
+      this.log('Queue next request failed: %s', err);
+      callback(err);
+      return;
+    }
+
+    this._configurePlaylistCompleted(device, callback);
+  }.bind(this));
+};
+
+// Process playlist from queue
+SonosSceneAccessory.prototype._configurePlaylistQueue = function (device, callback) {
   device.sonos.flush(function (err) {
     if (err) {
       this.log('Queue flush request failed: %s', err);
@@ -915,9 +978,9 @@ SonosSceneAccessory.prototype._configurePlaylist = function (device, callback) {
     }
 
     device.sonos.queue({
-      uri: 'x-rincon-cpcontainer:10062a6c' + this.sceneConfig.playlist.replace(/:/g, '%3a'),
+      uri: this._getPlaylistUri(),
       metadata: '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">' +
-                '<item id="10062a6c' + this.sceneConfig.playlist.replace(/:/g, '%3a') + '"  restricted="true"><dc:title>New</dc:title><upnp:class>object.container.playlistContainer</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON' + this.platform.config.spotify_rincon_id + '_X_#Svc' + this.platform.config.spotify_rincon_id + '-0-Token</desc></item></DIDL-Lite>'
+                '<item id="' + this._getPlaylistId() + '"  restricted="true"><dc:title>Playlist</dc:title><upnp:class>object.container.playlistContainer</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON' + this.platform.config.spotify_rincon_id + '_X_#Svc' + this.platform.config.spotify_rincon_id + '-0-Token</desc></item></DIDL-Lite>'
     }, function (err) {
       if (err) {
         this.log('Playlist queue request failed: %s', err);
@@ -932,17 +995,30 @@ SonosSceneAccessory.prototype._configurePlaylist = function (device, callback) {
           return;
         }
 
-        this.log('Playlist has been configured on coordinator %s', device.name);
+        device.sonos.setPlayMode('SHUFFLE', function (err) {
+          if (err) {
+            this.log('Play mode request failed: %s', err);
+            callback(err);
+            return;
+          }
 
-        if (this.sceneConfig.volume) {
-          this._configureVolume(device, callback);
-          return;
-        }
-
-        this._play(device, callback);
+          this._configurePlaylistCompleted(device, callback);
+        }.bind(this));
       }.bind(this));
     }.bind(this));
   }.bind(this));
+};
+
+// Configure playlist completed
+SonosSceneAccessory.prototype._configurePlaylistCompleted = function (device, callback) {
+  this.log('Playlist has been configured on coordinator %s', device.name);
+
+  if (this.sceneConfig.volume) {
+    this._configureVolume(device, callback);
+    return;
+  }
+
+  this._play(device, callback);
 };
 
 // Configure volume level
@@ -987,40 +1063,30 @@ SonosSceneAccessory.prototype._configureVolume = function (device, callback) {
   }
 };
 
-// Set play mode and start playing
+// Start playing
 SonosSceneAccessory.prototype._play = function (device, callback) {
-  device.sonos.setPlayMode('SHUFFLE', function (err) {
+  if (!device.accessory) {
+    this.log('Sonos device became unreachable during play request');
+    callback(new Error('Sonos device became unreachable'));
+    return;
+  }
+
+  device.accessory.unmuteAndPlay(function (err) {
     if (err) {
-      this.log('Play mode request failed: %s', err);
+      this.log('Unmute request failed: %s', err);
       callback(err);
       return;
     }
 
-    if (!device.accessory) {
-      this.log('Sonos device became unreachable during play request');
-      callback(new Error('Sonos device became unreachable'));
+    if (!this.sceneConfig.sleepTimer) {
+      this.log('Playlist %s successfully played', this.sceneConfig.playlist);
+      callback(null);
       return;
     }
 
-    this.log('Coordinator in zone %s is now set to SHUFFLE', device.name);
+    this.log('Coordinator %s is now playing', device.name);
 
-    device.accessory.unmuteAndPlay(function (err) {
-      if (err) {
-        this.log('Unmute request failed: %s', err);
-        callback(err);
-        return;
-      }
-
-      if (!this.sceneConfig.sleepTimer) {
-        this.log('Playlist %s successfully played', this.sceneConfig.playlist);
-        callback(null);
-        return;
-      }
-
-      this.log('Coordinator %s is now playing', device.name);
-
-      this._configureSleepTimer(device, callback);
-    }.bind(this));
+    this._configureSleepTimer(device, callback);
   }.bind(this));
 };
 
