@@ -887,7 +887,12 @@ SonosSceneAccessory.prototype._getAudioInputUri = function () {
 
 // Get a playlist URI
 SonosSceneAccessory.prototype._getPlaylistUri = function () {
-  return 'x-rincon-cpcontainer:10062a6c' + this.sceneConfig.playlist.replace(/:/g, '%3a');
+  return 'x-rincon-cpcontainer:' + this._getPlaylistId();
+};
+
+// Get a playlist ID
+SonosSceneAccessory.prototype._getPlaylistId = function () {
+  return '10062a6c' + this.sceneConfig.playlist.replace(/:/g, '%3a');
 };
 
 // Configure the other devices in the scene configuration to use our coordinator
